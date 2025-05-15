@@ -1,0 +1,339 @@
+esphome:
+  name: trmnl_esphome
+  friendly_name: TRMNL ESPHome Display
+  on_boot:
+    priority: -100.0 # Low priority, runs after most other components initialize
+    then:
+      - logger.log: "Woke from sleep or booted."
+      - delay: 5s
+      # Optional: Update battery sensor first if its initial read isn't automatic or fast enough
+      - component.update: trmnl_adc_voltage
+      - delay: 1s
+      - component.update: trmnl_battery_voltage_actual
+      - delay: 1s
+      - component.update: trmnl_battery_level
+      - delay: 30s
+      - component.update: my_display
+  on_shutdown:
+    then:
+      - logger.log: "Entering deep sleep..."
+
+esp32:
+  board: esp32-c3-devkitm-1 # Or a generic esp32c3 board
+  framework:
+    type: esp-idf # Or arduino
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "..."
+
+ota:
+  - platform: esphome
+    password: "..."
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "S Fallback Hotspot"
+    password: "..."
+
+captive_portal:
+
+
+# SPI bus configuration for the e-ink display
+spi:
+  - id: eink_spi_bus # Define a specific SPI bus
+    clk_pin: GPIO7 #2
+    mosi_pin: GPIO8 #3
+    # MISO is often not needed for display-only applications
+    #baud_rate: 4000000 # Set baud rate here if needed, often the display driver handles it or uses a default.
+                         # Let's try without it first, as the display component might set an optimal one.
+deep_sleep:
+  run_duration: 60s # How long the device stays awake to connect, fetch data, and update display.
+                    # Adjust this based on how long your device takes for a full update cycle.
+                    # Start with a longer duration (e.g., 60s-90s) and reduce once stable.
+  sleep_duration: 10min # How long the device sleeps. This will be the main update interval for the display.
+                       # This replaces the display's update_interval for waking the device.
+  wakeup_pin: #GPIO2 # Optional: Define a pin to wake the device manually (e.g., a button)
+    number: GPIO2
+    inverted: true
+
+  # esp32_ext1_wakeup: # For ESP32, not typically used for ESP32-C3 in this manner
+  #   pins:
+  #     - pin: GPIOX
+  #       mode: "esp_sleep_ext1_wakeup_mode_t" # e.g. ESP_EXT1_WAKEUP_ALL_LOW or ESP_EXT1_WAKEUP_ANY_HIGH
+
+
+# Font for displaying text
+font:
+  - file: "gfonts://Roboto"
+    id: font_time # For the clock
+    size: 24
+  - file: "gfonts://Roboto Condensed" # A slightly more compact font for titles
+    id: font_section_title
+    size: 36
+  - file: "gfonts://Roboto"
+    id: font_label # For sensor labels
+    size: 18
+  - file: "gfonts://Roboto" # For sensor values
+    id: font_value
+    size: 24
+  - file: "gfonts://Roboto" # For smaller labels or units
+    id: font_unit
+    size: 16
+
+
+# Time component to get current time
+time:
+  - platform: homeassistant # Or get time from Home Assistant
+    id: ha_time
+    timezone: 'America/Chicago'
+
+# Sensor components to get data from Home Assistant
+sensor:
+  # --- Airthings IAQ Sensors (Replace entity_ids) ---
+  - platform: homeassistant
+    id: ha_airthings_co2
+    entity_id: sensor.airthings_wave_191443_carbon_dioxide # e.g., sensor.airthings_wave_plus_co2
+    internal: true
+  - platform: homeassistant
+    id: ha_airthings_voc
+    entity_id: sensor.airthings_wave_191443_volatile_organic_compounds_parts # e.g., sensor.airthings_wave_plus_voc
+    internal: true
+  - platform: homeassistant
+    id: ha_airthings_radon
+    entity_id: sensor.airthings_wave_191443_radon_1_day_average # e.g., sensor.airthings_wave_plus_radon_short_term_avg
+    internal: true
+  - platform: homeassistant
+    id: ha_airthings_humidity
+    entity_id: sensor.airthings_wave_191443_humidity # e.g., sensor.airthings_wave_plus_humidity
+    internal: true
+  - platform: homeassistant
+    id: ha_airthings_temperature
+    entity_id: sensor.airthings_wave_191443_temperature # e.g., sensor.airthings_wave_plus_temperature
+    internal: true
+
+  # --- Outdoor Sensors (Replace entity_ids) ---
+  - platform: homeassistant
+    id: ha_outdoor_temperature
+    entity_id: sensor.outdoor_temperature_sensor_temperature # e.g., sensor.openweathermap_temperature
+    internal: true
+  - platform: homeassistant
+    id: ha_outdoor_humidity
+    entity_id: sensor.outdoor_temperature_sensor_humidity # e.g., sensor.openweathermap_humidity
+    internal: true
+
+  # --- Nest Thermostat Sensors (Uses climate.downstairs_thermostat) ---
+  - platform: homeassistant
+    id: ha_thermostat_current_temp
+    entity_id: climate.downstairs_thermostat
+    attribute: current_temperature
+    internal: true
+  - platform: homeassistant
+    id: ha_thermostat_target_temp
+    entity_id: climate.downstairs_thermostat
+    attribute: temperature # This is typically the target temperature
+    internal: true
+
+  # --- TRMNL Device Battery Sensor ---
+  - platform: adc
+    pin: GPIO3 # <<< Updated to GPIO3 as per your information
+    name: "TRMNL ADC Voltage" # Renamed for clarity, this is voltage at the ADC pin
+    id: trmnl_adc_voltage
+    #update_interval: 30s
+    attenuation: auto # ESP32-C3 ADC voltage range is typically 0-2.5V with default attenuation.
+                      # 'auto' should select appropriate attenuation. If battery voltage at pin exceeds this,
+                      # explicit attenuation (e.g., 11db for 0-3.1V on ESP32-C3 with IDF) might be needed.
+                      # Given the *2 multiplier, max voltage at ADC pin (for 4.2V LiPo) would be 2.1V,
+                      # which should be fine with 'auto' or default attenuation on ESP32-C3.
+    # This sensor will report raw voltage AT THE ADC PIN.
+    # It will be exposed to Home Assistant by default.
+
+  - platform: template
+    name: "TRMNL Battery Voltage (Actual)" # New sensor for the calculated actual battery voltage
+    id: trmnl_battery_voltage_actual
+    unit_of_measurement: "V"
+    icon: "mdi:battery-heart-variant"
+    accuracy_decimals: 2
+    lambda: |-
+      if (!id(trmnl_adc_voltage).has_state()) return NAN; // Check if ADC voltage sensor has a state
+      float actual_voltage = id(trmnl_adc_voltage).state * 2.0;
+      return actual_voltage;
+    #update_interval: 30s
+
+  - platform: template
+    name: "TRMNL Battery Level"
+    id: trmnl_battery_level
+    unit_of_measurement: "%"
+    icon: "mdi:battery"
+    accuracy_decimals: 0
+    lambda: |-
+      if (!id(trmnl_battery_voltage_actual).has_state()) return NAN; // Check if actual voltage sensor has a state
+      
+      float voltage = id(trmnl_battery_voltage_actual).state; 
+      // Standard LiPo voltage range, adjust if your battery is different
+      float min_volt = 3.0; 
+      float max_volt = 4.2;
+      
+      float percentage = ((voltage - min_volt) / (max_volt - min_volt)) * 100.0;
+      
+      if (percentage > 100.0) return 100.0;
+      if (percentage < 0.0) return 0.0;
+      return percentage;
+    #update_interval: 30s
+    # This sensor will also be exposed to Home Assistant.
+    
+text_sensor:
+  - platform: homeassistant
+    id: ha_thermostat_mode_str # Changed ID for clarity
+    entity_id: climate.downstairs_thermostat
+    # When no 'attribute' is specified for a climate entity with text_sensor,
+    # it defaults to the main state (e.g., "heat", "cool", "off").
+    internal: true
+
+# Display configuration for the Waveshare e-ink panel
+display:
+  - platform: waveshare_epaper
+    id: my_display
+    spi_id: eink_spi_bus # Use the defined SPI bus
+    cs_pin: GPIO6 #7    # Chip Select
+    dc_pin: GPIO5 #0    # Data/Command
+    busy_pin: GPIO4 #6  # Busy status
+    reset_pin: GPIO10 #1 # Reset
+    reset_duration: 20ms # Explicit reset duration (common value)
+    model: "7.50in-bv3" # For Waveshare 7.5inch e-Paper V2 (800x480)
+    update_interval: never # Refresh display every 5 minutes
+    #full_update_every: 12 # Perform a full refresh every hour (12 * 5 min)
+    
+    lambda: |-
+
+      int width = it.get_width(); // 800
+      int height = it.get_height(); // 480
+      int line_height_label = 20;
+      int line_height_value = 28;
+      int section_padding_top = 5;
+      int value_offset_y = 18; // Offset for value below label
+
+      // --- Display Battery Level (Below Time, Top Right) ---
+      if (id(trmnl_battery_level).has_state()) {
+        it.printf(15, 15, id(font_time), TextAlign::TOP_LEFT, "Batt: %.0f%%", id(trmnl_battery_level).state);
+      } else {
+        it.print(15, 15, id(font_time), TextAlign::TOP_LEFT, "Batt: N/A");
+      }
+
+      // --- Display Current Time (Top Right) ---
+      if (id(ha_time).now().is_valid()) {
+        it.strftime(width - 15, 15, id(font_time), TextAlign::TOP_RIGHT, "%I:%M %p", id(ha_time).now());
+      } else {
+        it.print(width - 15, 15, id(font_time), TextAlign::TOP_RIGHT, "Sync...");
+      }
+      
+      //it.fill(Color::BLACK);
+      // --- Horizontal Separator Line ---
+      //it.line(10, 50, width - 10, 50, Color::BLACK);
+      it.line(10, 50, width - 10, 50);
+      //it.fill(Color::WHITE);
+
+      // --- Column Definitions ---
+      int col1_x = 20;
+      int col2_x = 300; 
+      int col3_x = 580;
+      int current_y;
+
+      // ========================== COLUMN 1: INDOOR AIR QUALITY ==========================
+      current_y = 70;
+      it.print(col1_x, current_y, id(font_section_title), TextAlign::TOP_LEFT, "AIR QUALITY");
+      current_y += 40;
+
+      // CO2
+      it.print(col1_x, current_y, id(font_label), TextAlign::TOP_LEFT, "CO2");
+      if (id(ha_airthings_co2).has_state()) {
+        it.printf(col1_x + 100, current_y, id(font_value), TextAlign::TOP_LEFT, "%.0f", id(ha_airthings_co2).state);
+        it.print(col1_x + 160, current_y + 4, id(font_unit), TextAlign::TOP_LEFT, "ppm");
+      } else { it.print(col1_x + 100, current_y, id(font_value), TextAlign::TOP_LEFT, "N/A"); }
+      current_y += line_height_value + section_padding_top + 5;
+
+      // VOC
+      it.print(col1_x, current_y, id(font_label), TextAlign::TOP_LEFT, "VOC Index");
+      if (id(ha_airthings_voc).has_state()) {
+        it.printf(col1_x + 100, current_y, id(font_value), TextAlign::TOP_LEFT, "%.0f", id(ha_airthings_voc).state);
+      } else { it.print(col1_x + 100, current_y, id(font_value), TextAlign::TOP_LEFT, "N/A"); }
+      current_y += line_height_value + section_padding_top + 5;
+      
+      // Radon
+      it.print(col1_x, current_y, id(font_label), TextAlign::TOP_LEFT, "Radon");
+      if (id(ha_airthings_radon).has_state()) {
+        it.printf(col1_x + 100, current_y, id(font_value), TextAlign::TOP_LEFT, "%.1f", id(ha_airthings_radon).state);
+        // Note: Add Bq/m³ or pCi/L manually or based on your sensor's unit
+        // it.print(col1_x + 160, current_y + 4, id(font_unit), TextAlign::TOP_LEFT, "Bq/m³"); 
+      } else { it.print(col1_x + 100, current_y, id(font_value), TextAlign::TOP_LEFT, "N/A"); }
+      current_y += line_height_value + section_padding_top + 5;
+
+      // Airthings Temperature
+      it.print(col1_x, current_y, id(font_label), TextAlign::TOP_LEFT, "Room Temp");
+      if (id(ha_airthings_temperature).has_state()) {
+        it.printf(col1_x + 100, current_y, id(font_value), TextAlign::TOP_LEFT, "%.1f°F", id(ha_airthings_temperature).state);
+      } else { it.print(col1_x + 100, current_y, id(font_value), TextAlign::TOP_LEFT, "N/A"); }
+      current_y += line_height_value + section_padding_top + 5;
+
+      // Airthings Humidity
+      it.print(col1_x, current_y, id(font_label), TextAlign::TOP_LEFT, "Room Hum");
+      if (id(ha_airthings_humidity).has_state()) {
+        it.printf(col1_x + 100, current_y, id(font_value), TextAlign::TOP_LEFT, "%.0f%%", id(ha_airthings_humidity).state);
+      } else { it.print(col1_x + 100, current_y, id(font_value), TextAlign::TOP_LEFT, "N/A"); }
+      current_y += line_height_value + section_padding_top + 5;
+
+      // ========================== COLUMN 2: OUTDOOR CONDITIONS ==========================
+      current_y = 70; // Reset Y for the new column
+      it.print(col2_x, current_y, id(font_section_title), TextAlign::TOP_LEFT, "OUTDOOR");
+      current_y += 40;
+
+      // Outdoor Temperature
+      it.print(col2_x, current_y, id(font_label), TextAlign::TOP_LEFT, "Temperature");
+      if (id(ha_outdoor_temperature).has_state()) {
+        it.printf(col2_x + 10, current_y + value_offset_y, id(font_value), TextAlign::TOP_LEFT, "%.1f°F", id(ha_outdoor_temperature).state);
+      } else { it.print(col2_x + 10, current_y + value_offset_y, id(font_value), TextAlign::TOP_LEFT, "N/A"); }
+      current_y += line_height_value + section_padding_top + 25; // Extra padding
+
+      // Outdoor Humidity
+      it.print(col2_x, current_y, id(font_label), TextAlign::TOP_LEFT, "Humidity");
+      if (id(ha_outdoor_humidity).has_state()) {
+        it.printf(col2_x + 10, current_y + value_offset_y, id(font_value), TextAlign::TOP_LEFT, "%.0f%%", id(ha_outdoor_humidity).state);
+      } else { it.print(col2_x + 10, current_y + value_offset_y, id(font_value), TextAlign::TOP_LEFT, "N/A"); }
+      current_y += line_height_value + section_padding_top + 5;
+      
+      // ========================== COLUMN 3: THERMOSTAT ==========================
+      current_y = 70; // Reset Y for the new column
+      it.print(col3_x, current_y, id(font_section_title), TextAlign::TOP_LEFT, "THERMOSTAT");
+      current_y += 40;
+
+      // Thermostat Mode
+      it.print(col3_x, current_y, id(font_label), TextAlign::TOP_LEFT, "Mode");
+      if (id(ha_thermostat_mode_str).has_state()) { // Use the new text_sensor ID
+        // Convert state to uppercase for display
+        std::string mode_str = id(ha_thermostat_mode_str).state; // This is now a std::string
+        std::transform(mode_str.begin(), mode_str.end(), mode_str.begin(), ::toupper);
+        it.print(col3_x + 10, current_y + value_offset_y, id(font_value), TextAlign::TOP_LEFT, mode_str.c_str());
+      } else { it.print(col3_x + 10, current_y + value_offset_y, id(font_value), TextAlign::TOP_LEFT, "N/A"); }
+      current_y += line_height_value + section_padding_top + 25;
+
+      // Thermostat Current Temperature
+      it.print(col3_x, current_y, id(font_label), TextAlign::TOP_LEFT, "Current");
+      if (id(ha_thermostat_current_temp).has_state()) {
+        it.printf(col3_x + 10, current_y + value_offset_y, id(font_value), TextAlign::TOP_LEFT, "%.1f°F", id(ha_thermostat_current_temp).state);
+      } else { it.print(col3_x + 10, current_y + value_offset_y, id(font_value), TextAlign::TOP_LEFT, "N/A"); }
+      current_y += line_height_value + section_padding_top + 25;
+
+      // Thermostat Target Temperature
+      it.print(col3_x, current_y, id(font_label), TextAlign::TOP_LEFT, "Target");
+      if (id(ha_thermostat_target_temp).has_state()) {
+        it.printf(col3_x + 10, current_y + value_offset_y, id(font_value), TextAlign::TOP_LEFT, "%.1f°F", id(ha_thermostat_target_temp).state);
+      } else { it.print(col3_x + 10, current_y + value_offset_y, id(font_value), TextAlign::TOP_LEFT, "N/A"); }
+      current_y += line_height_value + section_padding_top + 5;
